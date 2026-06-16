@@ -22,7 +22,7 @@ def flash_attn_fwd_kernel(
 
     q_offset = pid_z * stride_qz + pid_h * stride_qh + offs_m[:, None] * stride_qm
     Q_ptrs = Q_ptr + q_offset + offs_d[None, :] * stride_qk
-    q = tl.load(tl.multiple_of(Q_ptrs, 16), mask=offs_m[:, None] < N_CTX, other=0.0)
+    q = tl.load(tl.multiple_of(Q_ptrs, (16, 16)), mask=offs_m[:, None] < N_CTX, other=0.0)
 
     m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
@@ -40,8 +40,8 @@ def flash_attn_fwd_kernel(
         K_ptrs = K_ptr + pid_z * stride_kz + pid_h * stride_kh + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk
         V_ptrs = V_ptr + pid_z * stride_vz + pid_h * stride_vh + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk
         
-        k = tl.load(tl.multiple_of(K_ptrs, 16), mask=offs_n[:, None] < N_CTX, other=0.0)
-        v = tl.load(tl.multiple_of(V_ptrs, 16), mask=offs_n[:, None] < N_CTX, other=0.0)
+        k = tl.load(tl.multiple_of(K_ptrs, (16, 16)), mask=offs_n[:, None] < N_CTX, other=0.0)
+        v = tl.load(tl.multiple_of(V_ptrs, (16, 16)), mask=offs_n[:, None] < N_CTX, other=0.0)
 
         s = tl.dot(q, tl.trans(k)) * qk_scale
 
@@ -66,4 +66,4 @@ def flash_attn_fwd_kernel(
     acc = acc / l_i[:, None]
 
     O_ptrs = O_ptr + pid_z * stride_oz + pid_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok
-    tl.store(tl.multiple_of(O_ptrs, 16), acc.to(q.dtype), mask=offs_m[:, None] < N_CTX)
+    tl.store(tl.multiple_of(O_ptrs, (16, 16)), acc.to(q.dtype), mask=offs_m[:, None] < N_CTX)
