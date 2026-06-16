@@ -18,14 +18,13 @@ def flash_attn_fwd_kernel(
     pid_z = tl.program_id(2)   # 负责当前是第几个 Batch 句子
 
     # 2. 定位当前 Program 专属的 Q 块起始地址
-    q_offset = pid_z * stride_qz + pid_h * stride_qh + pid_m * BLOCK_M * stride_qm
-    
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
-    
-    # 构造二维指针矩阵网格
-    Q_ptrs = Q_ptr + q_offset + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
-    q = tl.load(Q_ptrs)
+
+    # 构造二维指针矩阵网格并装载 
+    Q_ptrs = Q_ptr + pid_z * stride_qz + pid_h * stride_qh + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk
+    # 🛡️ 生产级掩码：拦截 Q 块行数越界
+    q = tl.load(Q_ptrs, mask=offs_m[:, None] < N_CTX, other=0.0)
 
     # 3. 初始化在线 Softmax 片上临时账本
     m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
@@ -37,11 +36,14 @@ def flash_attn_fwd_kernel(
     # 4. 沿着 K/V 的长度轴横向进行大循环分块迭代
     for start_n in range(0, N_CTX, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
+
+        # 物理指针精确制导：拉取 K 块与 V 块
+        K_ptrs = K_ptr + pid_z * stride_kz + pid_h * stride_kh + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk
+        V_ptrs = V_ptr + pid_z * stride_vz + pid_h * stride_vh + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk
         
-        # 物理指针精确制导：拉取 K 块
-        k_offset = pid_z * stride_kz + pid_h * stride_kh
-        K_ptrs = K_ptr + k_offset + (offs_n[:, None] * stride_kz + offs_d[None, :] * stride_kk)
-        k = tl.load(K_ptrs)
+        # 🛡️ 生产级掩码：加载 K、V 时严密拦截动态非整除长度越界，越界部分用 0.0 垫底
+        k = tl.load(K_ptrs, mask=offs_n[:, None] < N_CTX, other=0.0)
+        v = tl.load(V_ptrs, mask=offs_n[:, None] < N_CTX, other=0.0)
 
         # ⚡ 硬件硬核调用：Tensor Core 矩阵乘法 S = Q * K^T
         s = tl.dot(q, tl.trans(k)) * qk_scale
@@ -59,11 +61,6 @@ def flash_attn_fwd_kernel(
         # 🧬 物理级拯救：对齐老账本的数学单位
         acc = acc * alpha[:, None]
 
-        # 拉取 V 块
-        v_offset = pid_z * stride_vz + pid_h * stride_vh
-        V_ptrs = V_ptr + v_offset + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
-        v = tl.load(V_ptrs)
-
         # 计算当前块归一化前的权重，并用 Tensor Core 乘以 V 累加进输出
         p = tl.math.exp(s - m_next[:, None])
         acc += tl.dot(p.to(tl.float16), v)
@@ -76,6 +73,6 @@ def flash_attn_fwd_kernel(
     acc = acc / l_i[:, None]
 
     # 6. 安全、连续地写回全局显存 (O)
-    o_offset = pid_z * stride_oz + pid_h * stride_oh + pid_m * BLOCK_M * stride_om
-    O_ptrs = O_ptr + o_offset + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
-    tl.store(O_ptrs, acc)
+    O_ptrs = O_ptr + pid_z * stride_oz + pid_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok
+    # 🛡️ 生产级掩码：防止输出写回时踩踏未知内存
+    tl.store(O_ptrs, acc, mask=offs_m[:, None] < N_CTX)
