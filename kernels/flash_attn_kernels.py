@@ -24,7 +24,7 @@ def flash_attn_fwd_kernel(
     Q_ptrs = Q_ptr + q_offset + offs_d[None, :] * stride_qk
     
     # ⚡ 激活 3080 Ti 强大的向量化加载
-    q = tl.load(tl.multiple_of(Q_ptrs, 16), mask=offs_m[:, None] < N_CTX, other=0.0)
+    q = tl.load(tl.multiple_of(Q_ptrs, (16, 16)), mask=offs_m[:, None] < N_CTX, other=0.0)
 
     # 账本初始化
     m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
@@ -43,8 +43,8 @@ def flash_attn_fwd_kernel(
         V_ptrs = V_ptr + pid_z * stride_vz + pid_h * stride_vh + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk
         
         # ⚡ 强制触发 128-bit 向量化合并访问
-        k = tl.load(tl.multiple_of(K_ptrs, 16), mask=offs_n[:, None] < N_CTX, other=0.0)
-        v = tl.load(tl.multiple_of(V_ptrs, 16), mask=offs_n[:, None] < N_CTX, other=0.0)
+        k = tl.load(tl.multiple_of(K_ptrs, (16, 16)), mask=offs_n[:, None] < N_CTX, other=0.0)
+        v = tl.load(tl.multiple_of(V_ptrs, (16, 16)), mask=offs_n[:, None] < N_CTX, other=0.0)
 
         # ⚡ Ampere Tensor Core 轰击：计算 S = Q * K^T
         s = tl.dot(q, tl.trans(k)) * qk_scale
@@ -73,4 +73,4 @@ def flash_attn_fwd_kernel(
 
     # 写回全局显存
     O_ptrs = O_ptr + pid_z * stride_oz + pid_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok
-    tl.store(tl.multiple_of(O_ptrs, 16), acc.to(q.dtype), mask=offs_m[:, None] < N_CTX)
+    tl.store(tl.multiple_of(O_ptrs, (16, 16)), acc.to(q.dtype), mask=offs_m[:, None] < N_CTX)
