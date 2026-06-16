@@ -15,21 +15,21 @@ v = torch.randn(BATCH, HEADS, SEQ_LEN, HEAD_DIM, device="cuda", dtype=torch.floa
 
 # 预热 GPU (Warmup) 防止动态编译和冷启动干扰计时
 for _ in range(10):
-    _ = flash_attention_v2(q, k, v)
-    _ = F.scaled_dot_product_attention(q, k, v)
+    _ = flash_attention_v2(q, k, v,is_causal=True)
+    _ = F.scaled_dot_product_attention(q, k, v,is_causal=True)
 torch.cuda.synchronize()
 
 # 1. 测试你的 Triton 版 FlashAttention 耗时
 start_time = time.time()
 for _ in range(100):
-    out_triton = flash_attention_v2(q, k, v)
+    out_triton = flash_attention_v2(q, k, v,is_causal=True)
 torch.cuda.synchronize()
 triton_time = (time.time() - start_time) / 100
 
 # 2. 测试 PyTorch 官方原生标杆耗时
 start_time = time.time()
 for _ in range(100):
-    out_torch = F.scaled_dot_product_attention(q, k, v)
+    out_torch = F.scaled_dot_product_attention(q, k, v,is_causal=True)
 torch.cuda.synchronize()
 torch_time = (time.time() - start_time) / 100
 

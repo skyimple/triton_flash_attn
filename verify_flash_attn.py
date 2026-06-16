@@ -18,10 +18,13 @@ v = torch.randn(batch_size, num_heads, seq_len, head_dim, device="cuda", dtype=t
 
 # 2. 调用你手撕的 Triton FlashAttention 引擎
 print("🛠️ 首次启动：触发 Triton JIT 编译器在后台狂轰乱炸生成机器汇编...")
-triton_out = flash_attention_v2(q, k, v)
+# triton_out = flash_attention_v2(q, k, v)
+# # 3. 调用 PyTorch 官方高度优化、公认绝对正确的原生标杆算子
+# torch_out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
 
-# 3. 调用 PyTorch 官方高度优化、公认绝对正确的原生标杆算子
-torch_out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+triton_out = flash_attention_v2(q, k, v, is_causal=True)
+torch_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
 
 # 4. 分子级绝对精度对齐判决
 max_diff = torch.max(torch.abs(triton_out - torch_out)).item()
